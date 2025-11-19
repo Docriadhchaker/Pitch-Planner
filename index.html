@@ -1,0 +1,298 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Pitch Perfect Teleprompter V2</title>
+    <style>
+        body {
+            font-family: sans-serif;
+            margin: 0;
+            padding: 0;
+            background-color: #f0f2f5;
+            overflow: hidden; /* Prevent double scrollbars */
+        }
+
+        /* --- SETUP SCREEN --- */
+        #setup-panel {
+            max-width: 800px;
+            margin: 50px auto;
+            padding: 20px;
+            background: white;
+            border-radius: 10px;
+            box-shadow: 0 4px 10px rgba(0,0,0,0.1);
+            height: 80vh;
+            overflow-y: auto;
+        }
+
+        h1 { color: #333; text-align: center; }
+        label { display: block; margin-top: 15px; font-weight: bold; }
+        
+        textarea {
+            width: 100%;
+            height: 200px;
+            padding: 10px;
+            border: 1px solid #ccc;
+            border-radius: 5px;
+            font-size: 16px;
+            box-sizing: border-box;
+        }
+
+        .time-inputs { display: flex; gap: 10px; }
+        input[type="number"] { padding: 10px; width: 100px; font-size: 16px; }
+
+        button {
+            width: 100%;
+            margin-top: 20px;
+            padding: 15px;
+            background-color: #007bff;
+            color: white;
+            border: none;
+            border-radius: 5px;
+            font-size: 18px;
+            cursor: pointer;
+        }
+        button:hover { background-color: #0056b3; }
+
+        /* --- PROMPTER SCREEN --- */
+        #prompter-screen {
+            display: none;
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background-color: black;
+            color: white;
+            z-index: 1000;
+            overflow: hidden; /* We handle movement manually */
+        }
+
+        /* The text layer that actually moves */
+        #scrolling-layer {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            will-change: transform; /* Optimizes performance */
+        }
+
+        #content-text {
+            padding: 0 10%; /* Side margins */
+            /* 
+               This padding ensures the text starts exactly at the red line (35%)
+               and scrolling continues until the last line passes the red line.
+            */
+            padding-top: 35vh; 
+            padding-bottom: 65vh; 
+            
+            line-height: 1.5;
+            text-align: left;
+            font-family: Arial, sans-serif;
+        }
+
+        /* --- OVERLAYS --- */
+        #controls {
+            position: fixed;
+            top: 20px;
+            right: 20px;
+            display: flex;
+            gap: 10px;
+            z-index: 1001;
+        }
+
+        .control-btn {
+            padding: 10px 20px;
+            background: rgba(255, 255, 255, 0.2);
+            border: 1px solid white;
+            color: white;
+            cursor: pointer;
+            font-size: 14px;
+        }
+
+        /* Red Reading Guide */
+        #guide-line {
+            position: fixed;
+            top: 35%; /* The "Reading Point" */
+            left: 0;
+            width: 100%;
+            height: 0px;
+            border-top: 2px dashed rgba(255, 0, 0, 0.6);
+            z-index: 1002;
+            pointer-events: none;
+        }
+        
+        /* Small marker to show "Guide" text */
+        #guide-label {
+            position: fixed;
+            top: 35%;
+            left: 5px;
+            color: rgba(255,0,0,0.6);
+            font-size: 12px;
+            margin-top: -20px;
+        }
+
+    </style>
+</head>
+<body>
+
+    <!-- SETUP -->
+    <div id="setup-panel">
+        <h1>🎤 Pitch Planner V2</h1>
+        
+        <label>Paste your Pitch:</label>
+        <textarea id="script-text" placeholder="Paste your text here..."></textarea>
+
+        <label>Target Duration:</label>
+        <div class="time-inputs">
+            <input type="number" id="minutes" placeholder="Min" value="5" min="0">
+            <input type="number" id="seconds" placeholder="Sec" value="0" min="0" max="59">
+        </div>
+
+        <label>Font Size (px):</label>
+        <input type="number" id="font-size" value="60">
+
+        <button onclick="initPrompter()">Start Presentation</button>
+    </div>
+
+    <!-- PROMPTER -->
+    <div id="prompter-screen">
+        <div id="controls">
+            <button class="control-btn" onclick="togglePause()">Play/Pause (Space)</button>
+            <button class="control-btn" onclick="exitPrompter()">Exit</button>
+        </div>
+        
+        <div id="guide-line"></div>
+        <div id="guide-label">READ HERE</div>
+
+        <!-- Moving Container -->
+        <div id="scrolling-layer">
+            <div id="content-text"></div>
+        </div>
+    </div>
+
+    <script>
+        let animationId;
+        let startTime;
+        let pausedTime = 0;
+        let isPaused = false;
+        
+        let durationMS = 0;
+        let totalDistance = 0;
+        
+        // "Previous" time tracker for pause logic
+        let lastFrameTime = 0;
+
+        function initPrompter() {
+            const text = document.getElementById('script-text').value;
+            const minutes = parseInt(document.getElementById('minutes').value) || 0;
+            const seconds = parseInt(document.getElementById('seconds').value) || 0;
+            const fontSize = document.getElementById('font-size').value;
+
+            if (!text) { alert("Please enter text."); return; }
+            if (minutes === 0 && seconds === 0) { alert("Please set a duration."); return; }
+
+            // 1. Setup Text
+            const contentDiv = document.getElementById('content-text');
+            contentDiv.innerHTML = text.replace(/\n/g, "<br><br>");
+            contentDiv.style.fontSize = fontSize + "px";
+
+            // 2. Switch Screens
+            document.getElementById('setup-panel').style.display = 'none';
+            document.getElementById('prompter-screen').style.display = 'block';
+
+            // 3. Calculate Distances
+            // We need the actual height of the text content to know how far to scroll
+            const scrollLayer = document.getElementById('scrolling-layer');
+            
+            // Reset position
+            scrollLayer.style.transform = "translateY(0px)";
+            
+            // Calculate total duration in milliseconds
+            durationMS = ((minutes * 60) + seconds) * 1000;
+
+            // Distance to scroll = Height of the text block itself
+            // Since we added padding top/bottom, scrolling the height of the text block 
+            // effectively moves the whole thing past the guide line.
+            totalDistance = contentDiv.offsetHeight;
+
+            // 4. Start Animation Loop
+            isPaused = false;
+            pausedTime = 0;
+            startTime = null; // Will be set on first frame
+            animationId = requestAnimationFrame(step);
+        }
+
+        function step(timestamp) {
+            if (isPaused) {
+                // If paused, we don't update the position, but we keep the loop alive slightly 
+                // to catch the resume action, or we just stop requesting frames.
+                // Better: just stop requesting frames when paused.
+                return; 
+            }
+
+            if (!startTime) startTime = timestamp;
+
+            // Calculate how much time has passed
+            const elapsed = timestamp - startTime;
+            
+            // Calculate percentage complete (0.0 to 1.0)
+            const progress = Math.min(elapsed / durationMS, 1);
+
+            // Calculate current pixel position
+            const currentY = totalDistance * progress;
+
+            // Move the layer UP (negative Y)
+            document.getElementById('scrolling-layer').style.transform = `translateY(-${currentY}px)`;
+
+            // Continue if not finished
+            if (progress < 1) {
+                animationId = requestAnimationFrame(step);
+            }
+        }
+
+        function togglePause() {
+            if (isPaused) {
+                // RESUME
+                isPaused = false;
+                // We need to adjust startTime so the jump doesn't happen
+                // essentially: newStartTime = now - (how much we had already scrolled)
+                const now = performance.now();
+                // We need to know exactly how much time elapsed before pause.
+                // But simpler: we can't just use 'timestamp' from step easily.
+                // Let's reset the animation loop with an offset.
+                
+                // Re-calculate startTime based on current transform position?
+                // Easier approach for this specific code structure:
+                // We track "pausedAt". When resuming, we add the duration of the pause to startTime.
+                
+                const pauseDuration = now - pausedAt;
+                startTime += pauseDuration;
+                
+                animationId = requestAnimationFrame(step);
+            } else {
+                // PAUSE
+                isPaused = true;
+                cancelAnimationFrame(animationId);
+                pausedAt = performance.now();
+            }
+        }
+
+        let pausedAt = 0;
+
+        function exitPrompter() {
+            isPaused = true;
+            cancelAnimationFrame(animationId);
+            document.getElementById('prompter-screen').style.display = 'none';
+            document.getElementById('setup-panel').style.display = 'block';
+        }
+
+        // Spacebar Control
+        document.body.onkeyup = function(e) {
+            if ((e.key == " " || e.code == "Space") && document.getElementById('prompter-screen').style.display === 'block') {
+                togglePause();
+            }
+        }
+    </script>
+</body>
+</html>
